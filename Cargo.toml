@@ -1,0 +1,29 @@
+[package]
+name = "tauri-plugin-audio-recorder"
+version = "0.1.0"
+authors = ["Affex Team"]
+description = "Cross-platform audio recording plugin for Tauri applications with pause/resume support"
+edition = "2021"
+rust-version = "1.77.2"
+exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+links = "tauri-plugin-audio-recorder"
+license = "MIT"
+repository = "https://github.com/brenogonzaga/tauri-plugin-audio-recorder"
+homepage = "https://github.com/brenogonzaga/tauri-plugin-audio-recorder"
+documentation = "https://docs.rs/tauri-plugin-audio-recorder"
+keywords = ["tauri", "audio", "recording", "microphone", "cross-platform"]
+categories = ["multimedia::audio", "api-bindings"]
+
+[dependencies]
+tauri = { version = "2.9.5" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+log = "0.4"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+cpal = "0.15"
+hound = "3.5"
+
+[build-dependencies]
+tauri-plugin = { version = "2.5.2", features = ["build"] }
