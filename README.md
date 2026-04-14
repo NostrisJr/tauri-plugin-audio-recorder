@@ -2,6 +2,8 @@
 
 Cross-platform audio recording plugin for Tauri 2.x applications. Provides audio recording functionality for desktop (Windows, macOS, Linux) and mobile (iOS, Android).
 
+This is a fork of https://github.com/brenogonzaga/tauri-plugin-audio-recorder, made to expose amplitude of incomming audio, to feed waveforms displays.
+
 ## Features
 
 - **Cross-platform**: Works on Windows, macOS, Linux, iOS, and Android
