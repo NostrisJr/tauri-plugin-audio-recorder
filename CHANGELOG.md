@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-14
+
+### Added
+
+- Real-time amplitude event `audio-recorder://amplitude` emitted every ~50ms during recording
+- Payload: `{ rms: number }` normalized between 0.0 (silence) and 1.0 (full scale)
+- Event is suppressed while recording is paused on all platforms
+
+### Desktop
+
+- `AmplitudeAccumulator` struct accumulates PCM samples over a ~50ms window before computing RMS
+- Supports all three cpal sample formats (F32, I16, U16) with proper normalization to f32
+- Emits via `AppHandle::emit` (Tauri `Emitter` trait)
+
+### iOS
+
+- Replaced `AVAudioRecorder` with `AVAudioEngine` + `AVAudioInputNode.installTap`
+- PCM buffers are written to an `AVAudioFile` (AAC output, Core Audio handles PCM→AAC conversion)
+- RMS computed directly on `floatChannelData` of each buffer
+
+### Android
+
+- Added 50ms polling loop using `MediaRecorder.maxAmplitude` (0–32767), normalized to 0.0–1.0
+- Polling stops automatically on pause, resume, and cleanup
+
+---
+
 ## [0.1.0] - 2025-12
 
 ### Added

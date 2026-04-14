@@ -118,6 +118,14 @@ pub struct AudioDevicesResponse {
     pub devices: Vec<AudioDevice>,
 }
 
+/// Payload de l'event d'amplitude émis toutes les ~50ms pendant l'enregistrement
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AmplitudePayload {
+    /// Valeur RMS normalisée entre 0.0 (silence) et 1.0 (pleine échelle)
+    pub rms: f32,
+}
+
 /// Permission status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -8,10 +8,41 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use tauri::{plugin::PluginApi, AppHandle, Runtime};
+use tauri::{plugin::PluginApi, AppHandle, Emitter, Runtime};
 
 use crate::error::Error;
 use crate::models::*;
+
+/// Accumulateur RMS sur une fenêtre glissante de ~50ms.
+/// Appelé depuis le callback audio (thread dédié, pas de contention).
+struct AmplitudeAccumulator {
+    sum_sq: f32,
+    count: u32,
+    /// Nombre de samples (tous canaux) correspondant à ~50ms
+    target_count: u32,
+}
+
+impl AmplitudeAccumulator {
+    fn new(sample_rate: u32, channels: u16) -> Self {
+        let target_count = ((sample_rate as f32 * 0.05) as u32 * channels as u32).max(1);
+        Self { sum_sq: 0.0, count: 0, target_count }
+    }
+
+    /// Ajoute un sample normalisé [-1.0, 1.0].
+    /// Retourne le RMS clamped à [0.0, 1.0] quand la fenêtre est complète, None sinon.
+    fn push(&mut self, sample: f32) -> Option<f32> {
+        self.sum_sq += sample * sample;
+        self.count += 1;
+        if self.count >= self.target_count {
+            let rms = (self.sum_sq / self.count as f32).sqrt().clamp(0.0, 1.0);
+            self.sum_sq = 0.0;
+            self.count = 0;
+            Some(rms)
+        } else {
+            None
+        }
+    }
+}
 
 // Commands for the recording thread
 enum RecorderCommand {
@@ -52,10 +83,11 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     let shared = Arc::new(SharedState::default());
     let (cmd_tx, cmd_rx) = mpsc::channel::<RecorderCommand>();
 
-    // Spawn the recording thread
+    // Spawn the recording thread (app_clone pour émettre les events d'amplitude)
     let shared_clone = Arc::clone(&shared);
+    let app_clone = app.clone();
     let handle = thread::spawn(move || {
-        recording_thread(cmd_rx, shared_clone);
+        recording_thread(cmd_rx, shared_clone, app_clone);
     });
 
     Ok(AudioRecorder {
@@ -67,7 +99,11 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 }
 
 // Recording thread - owns all non-Send cpal types
-fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState>) {
+fn recording_thread<R: Runtime>(
+    rx: mpsc::Receiver<RecorderCommand>,
+    shared: Arc<SharedState>,
+    app: AppHandle<R>,
+) {
     let mut current_stream: Option<cpal::Stream> = None;
     let mut current_writer: Option<Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>> = None;
     let mut write_flag: Option<Arc<AtomicBool>> = None;
@@ -75,7 +111,7 @@ fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState
     loop {
         match rx.recv() {
             Ok(RecorderCommand::Start(config, reply)) => {
-                let result = start_recording_internal(&config, &shared);
+                let result = start_recording_internal(&config, &shared, &app);
                 match result {
                     Ok((stream, writer, flag)) => {
                         current_stream = Some(stream);
@@ -130,9 +166,10 @@ fn recording_thread(rx: mpsc::Receiver<RecorderCommand>, shared: Arc<SharedState
     }
 }
 
-fn start_recording_internal(
+fn start_recording_internal<R: Runtime>(
     config: &RecordingConfig,
     shared: &Arc<SharedState>,
+    app: &AppHandle<R>,
 ) -> Result<
     (
         cpal::Stream,
@@ -272,6 +309,11 @@ fn start_recording_internal(
 
     let err_fn = |err| log::error!("Audio stream error: {}", err);
 
+    // Clones et accumulateurs RMS pour chaque variant de format (chaque arm du match
+    // déplace ses propres captures, donc on prépare ici ceux du cas F32)
+    let app_f32 = app.clone();
+    let mut acc_f32 = AmplitudeAccumulator::new(sample_rate, channels);
+
     let stream = match supported_config.sample_format() {
         SampleFormat::F32 => device.build_input_stream(
             &cpal_config,
@@ -287,6 +329,15 @@ fn start_recording_internal(
                         }
                     }
                 }
+                // Calcul RMS et émission de l'event d'amplitude (~50ms)
+                for &sample in data {
+                    if let Some(rms) = acc_f32.push(sample) {
+                        let _ = app_f32.emit(
+                            "audio-recorder://amplitude",
+                            AmplitudePayload { rms },
+                        );
+                    }
+                }
                 let elapsed = start_time.elapsed().as_millis() as u64;
                 shared_clone.duration_ms.store(elapsed, Ordering::Relaxed);
             },
@@ -297,6 +348,8 @@ fn start_recording_internal(
             let write_enabled_clone = Arc::clone(&write_enabled);
             let writer_clone = Arc::clone(&writer);
             let shared_clone = Arc::clone(shared);
+            let app_i16 = app.clone();
+            let mut acc_i16 = AmplitudeAccumulator::new(sample_rate, channels);
             device.build_input_stream(
                 &cpal_config,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
@@ -310,6 +363,16 @@ fn start_recording_internal(
                             }
                         }
                     }
+                    // Normalisation i16 → f32 pour le calcul RMS
+                    for &sample in data {
+                        let sample_f32 = sample as f32 / 32768.0;
+                        if let Some(rms) = acc_i16.push(sample_f32) {
+                            let _ = app_i16.emit(
+                                "audio-recorder://amplitude",
+                                AmplitudePayload { rms },
+                            );
+                        }
+                    }
                     let elapsed = start_time.elapsed().as_millis() as u64;
                     shared_clone.duration_ms.store(elapsed, Ordering::Relaxed);
                 },
@@ -321,6 +384,8 @@ fn start_recording_internal(
             let write_enabled_clone = Arc::clone(&write_enabled);
             let writer_clone = Arc::clone(&writer);
             let shared_clone = Arc::clone(shared);
+            let app_u16 = app.clone();
+            let mut acc_u16 = AmplitudeAccumulator::new(sample_rate, channels);
             device.build_input_stream(
                 &cpal_config,
                 move |data: &[u16], _: &cpal::InputCallbackInfo| {
@@ -333,6 +398,16 @@ fn start_recording_internal(
                                 let sample_i16 = (sample as i32 - 32768) as i16;
                                 let _ = w.write_sample(sample_i16);
                             }
+                        }
+                    }
+                    // Normalisation u16 → f32 pour le calcul RMS
+                    for &sample in data {
+                        let sample_f32 = (sample as i32 - 32768) as f32 / 32768.0;
+                        if let Some(rms) = acc_u16.push(sample_f32) {
+                            let _ = app_u16.emit(
+                                "audio-recorder://amplitude",
+                                AmplitudePayload { rms },
+                            );
                         }
                     }
                     let elapsed = start_time.elapsed().as_millis() as u64;

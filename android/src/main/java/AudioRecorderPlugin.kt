@@ -50,7 +50,11 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
     private var currentChannels: Int = 1
     private var maxDurationHandler: Handler? = null
     private var maxDurationRunnable: Runnable? = null
-    
+
+    // Polling d'amplitude toutes les ~50ms pendant l'enregistrement
+    private var amplitudeHandler: Handler? = null
+    private var amplitudeRunnable: Runnable? = null
+
     // Audio focus handling
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -270,6 +274,8 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
             isPaused = false
             recordingStartTime = System.currentTimeMillis()
             pausedDuration = 0
+
+            startAmplitudePolling()
 
             if (config.maxDuration > 0) {
                 maxDurationHandler = Handler(Looper.getMainLooper())
@@ -555,7 +561,39 @@ class AudioRecorderPlugin(private val activity: Activity) : Plugin(activity) {
         }, 500) // Small delay to let the permission dialog appear
     }
 
+    /**
+     * Démarre un polling toutes les 50ms pour émettre l'amplitude via MediaRecorder.maxAmplitude.
+     * maxAmplitude retourne la valeur max depuis le dernier appel (0–32767), normalisée en 0.0–1.0.
+     */
+    private fun startAmplitudePolling() {
+        val handler = Handler(Looper.getMainLooper())
+        amplitudeHandler = handler
+        amplitudeRunnable = object : Runnable {
+            override fun run() {
+                if (isRecording && !isPaused) {
+                    val raw = mediaRecorder?.maxAmplitude ?: 0
+                    val rms = raw / 32767.0f
+                    val payload = JSObject()
+                    payload.put("rms", rms)
+                    trigger("audio-recorder://amplitude", payload)
+                }
+                handler.postDelayed(this, 50)
+            }
+        }
+        handler.postDelayed(amplitudeRunnable!!, 50)
+        Log.d(TAG, "Polling d'amplitude démarré (50ms)")
+    }
+
+    /** Arrête le polling d'amplitude. */
+    private fun stopAmplitudePolling() {
+        amplitudeRunnable?.let { amplitudeHandler?.removeCallbacks(it) }
+        amplitudeHandler = null
+        amplitudeRunnable = null
+        Log.d(TAG, "Polling d'amplitude arrêté")
+    }
+
     private fun cleanup() {
+        stopAmplitudePolling()
         isRecording = false
         isPaused = false
         currentFilePath = null

@@ -12,7 +12,9 @@ class RecordingConfig: Decodable {
 }
 
 class AudioRecorderPlugin: Plugin {
-    private var audioRecorder: AVAudioRecorder?
+    // AVAudioEngine remplace AVAudioRecorder pour avoir accès aux buffers PCM (RMS)
+    private var audioEngine: AVAudioEngine?
+    private var audioOutputFile: AVAudioFile?
     private var recordingStartTime: Date?
     private var pausedDuration: TimeInterval = 0
     private var pauseStartTime: Date?
@@ -64,33 +66,29 @@ class AudioRecorderPlugin: Plugin {
         
         switch type {
         case .began:
-            // Interruption began - pause recording if active
+            // Suspension de l'enregistrement : le tap AVAudioEngine cessera d'écrire
             if isRecording && !isPaused {
                 wasRecordingBeforeInterruption = true
-                audioRecorder?.pause()
                 isPaused = true
                 pauseStartTime = Date()
-                NSLog("[AudioRecorder] Recording paused due to interruption")
+                NSLog("[AudioRecorder] Enregistrement suspendu (interruption système)")
             }
-            
+
         case .ended:
-            // Interruption ended - check if we should resume
             guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            
+
             if options.contains(.shouldResume) && wasRecordingBeforeInterruption {
-                // Reactivate audio session and resume recording
                 do {
                     try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                    audioRecorder?.record()
                     if let pauseStart = pauseStartTime {
                         pausedDuration += Date().timeIntervalSince(pauseStart)
                     }
                     isPaused = false
                     pauseStartTime = nil
-                    NSLog("[AudioRecorder] Recording resumed after interruption")
+                    NSLog("[AudioRecorder] Enregistrement repris après interruption")
                 } catch {
-                    NSLog("[AudioRecorder] Failed to resume after interruption: \(error.localizedDescription)")
+                    NSLog("[AudioRecorder] Échec de la reprise après interruption: \(error.localizedDescription)")
                 }
             }
             wasRecordingBeforeInterruption = false
@@ -213,32 +211,25 @@ class AudioRecorderPlugin: Plugin {
         
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            
-            let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 44100,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-                AVEncoderBitRateKey: 128000
-            ]
-            
-            audioRecorder = try AVAudioRecorder(url: fileUrl, settings: settings)
-            audioRecorder?.isMeteringEnabled = true
-            audioRecorder?.record()
-            
+
+            try startAudioEngine(fileUrl: fileUrl)
+
             isRecording = true
             isPaused = false
             recordingStartTime = Date()
             pausedDuration = 0
-            
+
             if let maxDuration = config.maxDuration, maxDuration > 0 {
-                maxDurationTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(maxDuration), repeats: false) { [weak self] _ in
+                maxDurationTimer = Timer.scheduledTimer(
+                    withTimeInterval: TimeInterval(maxDuration),
+                    repeats: false
+                ) { [weak self] _ in
                     self?.stopRecordingInternal()
                 }
             }
-            
+
             invoke.resolve()
         } catch {
             cleanup()
@@ -286,15 +277,18 @@ class AudioRecorderPlugin: Plugin {
         maxDurationTimer = nil
         NSLog("[AudioRecorder]   Max duration timer invalidated")
         
-        guard let recorder = audioRecorder,
-              let startTime = recordingStartTime,
+        guard let startTime = recordingStartTime,
               let filePath = currentFilePath else {
-            NSLog("[AudioRecorder]   ERROR: Missing recorder, startTime, or filePath")
+            NSLog("[AudioRecorder]   ERROR: Missing startTime or filePath")
             return nil
         }
-        
-        recorder.stop()
-        NSLog("[AudioRecorder]   Recorder stopped")
+
+        // Arrêt du moteur — le tap ne sera plus appelé après stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioOutputFile = nil  // flush + fermeture du fichier AAC
+        audioEngine = nil
+        NSLog("[AudioRecorder]   AVAudioEngine arrêté, fichier finalisé")
         
         let endTime = Date()
         let totalDuration: TimeInterval
@@ -342,10 +336,10 @@ class AudioRecorderPlugin: Plugin {
             return
         }
         
-        audioRecorder?.pause()
+        // Le tap AVAudioEngine vérifie isPaused et cesse d'écrire/d'émettre
         isPaused = true
         pauseStartTime = Date()
-        NSLog("[AudioRecorder]   Recording paused at \(pauseStartTime!)")
+        NSLog("[AudioRecorder]   Enregistrement mis en pause à \(pauseStartTime!)")
         
         invoke.resolve()
     }
@@ -367,16 +361,15 @@ class AudioRecorderPlugin: Plugin {
             return
         }
         
-        audioRecorder?.record()
-        
+        // Reprise : le tap recommencera à écrire et à émettre les events d'amplitude
         if let pauseStart = pauseStartTime {
             let pauseDuration = Date().timeIntervalSince(pauseStart)
             pausedDuration += pauseDuration
-            NSLog("[AudioRecorder]   Paused for \(pauseDuration)s, total paused: \(pausedDuration)s")
+            NSLog("[AudioRecorder]   Pause de \(pauseDuration)s, total pausé: \(pausedDuration)s")
         }
         isPaused = false
         pauseStartTime = nil
-        NSLog("[AudioRecorder]   Recording resumed")
+        NSLog("[AudioRecorder]   Enregistrement repris")
         
         invoke.resolve()
     }
@@ -476,11 +469,66 @@ class AudioRecorderPlugin: Plugin {
         }
     }
     
+    /// Démarre AVAudioEngine, installe un tap sur l'input pour le RMS et écrit dans fileUrl (AAC).
+    private func startAudioEngine(fileUrl: URL) throws {
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // Mise à jour des métadonnées depuis le format hardware réel
+        currentSampleRate = Int(inputFormat.sampleRate)
+        currentChannels = Int(inputFormat.channelCount)
+        NSLog("[AudioRecorder] Format hardware: \(currentSampleRate)Hz, \(currentChannels) canaux")
+
+        // Fichier de sortie AAC — AVAudioFile convertit automatiquement le PCM entrant
+        let fileSettings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: inputFormat.sampleRate,
+            AVNumberOfChannelsKey: inputFormat.channelCount,
+            AVEncoderBitRateKey: 128000,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        let outputFile = try AVAudioFile(forWriting: fileUrl, settings: fileSettings)
+        audioOutputFile = outputFile
+
+        // Taille de buffer pour ~50ms (minimum 1024 frames)
+        let bufferSize = AVAudioFrameCount(max(inputFormat.sampleRate * 0.05, 1024))
+
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, _ in
+            guard let self = self, !self.isPaused else { return }
+            // Écriture dans le fichier AAC
+            try? self.audioOutputFile?.write(from: buffer)
+            // Calcul et émission du RMS
+            self.emitAmplitude(from: buffer)
+        }
+
+        try engine.start()
+        audioEngine = engine
+        NSLog("[AudioRecorder] AVAudioEngine démarré")
+    }
+
+    /// Calcule le RMS sur le premier canal du buffer et émet l'event d'amplitude.
+    private func emitAmplitude(from buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.floatChannelData?[0] else { return }
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return }
+
+        var sumSq: Float = 0.0
+        for i in 0..<frameCount {
+            sumSq += channelData[i] * channelData[i]
+        }
+        let rms = min(sqrt(sumSq / Float(frameCount)), 1.0)
+        self.trigger("audio-recorder://amplitude", data: ["rms": rms as Any])
+    }
+
     private func cleanup() {
         NSLog("[AudioRecorder] cleanup() CALLED")
         NSLog("[AudioRecorder]   Resetting state...")
-        
-        audioRecorder = nil
+
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
+        audioOutputFile = nil
         isRecording = false
         isPaused = false
         currentFilePath = nil
