@@ -211,7 +211,7 @@ class AudioRecorderPlugin: Plugin {
         
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
+            try session.setCategory(.record, mode: .default, options: [.allowBluetoothHFP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             try startAudioEngine(fileUrl: fileUrl)
@@ -226,7 +226,7 @@ class AudioRecorderPlugin: Plugin {
                     withTimeInterval: TimeInterval(maxDuration),
                     repeats: false
                 ) { [weak self] _ in
-                    self?.stopRecordingInternal()
+                    _ = self?.stopRecordingInternal()
                 }
             }
 
@@ -518,7 +518,7 @@ class AudioRecorderPlugin: Plugin {
             sumSq += channelData[i] * channelData[i]
         }
         let rms = min(sqrt(sumSq / Float(frameCount)), 1.0)
-        self.trigger("audio-recorder://amplitude", data: ["rms": rms as Any])
+        self.trigger("audio-recorder://amplitude", data: ["rms": rms])
     }
 
     private func cleanup() {
