@@ -13,14 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The previous negotiation loop built a `StreamConfig` with the preset sample rate (e.g. 44100 Hz) even when the device's native rate differed, causing CoreAudio to silently deliver empty buffers with no error
   - `cpal_config` is now derived from `SupportedStreamConfig::config()`, which always matches the hardware's native rate and channel count
   - The `quality` preset field continues to work on iOS and Android but is ignored on desktop
-- **macOS**: `checkPermission` and `requestPermission` now call AVFoundation instead of always returning granted
-  - `checkPermission` maps `AVAuthorizationStatus`: `NotDetermined → {granted:false, canRequest:true}`, `Authorized → {granted:true, canRequest:false}`, `Denied/Restricted → {granted:false, canRequest:false}`
-  - `requestPermission` blocks until the system dialog resolves (using `AVCaptureDevice.requestAccess(for:)` + `mpsc` channel), then returns the actual result
-  - Fixes silent audio capture when macOS revokes microphone permission after an app rebuild
-
-### Documentation
-
-- Added macOS entitlement requirement (`com.apple.security.device.audio-input`) to README platform-specific setup
 
 ---
 

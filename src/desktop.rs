@@ -443,63 +443,6 @@ fn stop_recording_internal(
     })
 }
 
-/// macOS: query AVCaptureDevice authorization status for audio.
-#[cfg(target_os = "macos")]
-fn check_permission_macos() -> crate::Result<PermissionStatus> {
-    use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-
-    let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(AVMediaTypeAudio) };
-
-    let (granted, can_request) = match status {
-        AVAuthorizationStatus::NotDetermined => (false, true),
-        AVAuthorizationStatus::Authorized => (true, false),
-        _ => (false, false),
-    };
-
-    Ok(PermissionStatus { granted, can_request })
-}
-
-/// macOS: request AVCaptureDevice authorization for audio.
-/// Blocks the calling thread until the system dialog resolves.
-#[cfg(target_os = "macos")]
-fn request_permission_macos() -> crate::Result<PermissionStatus> {
-    use block2::RcBlock;
-    use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-
-    let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(AVMediaTypeAudio) };
-
-    match status {
-        AVAuthorizationStatus::Authorized => {
-            return Ok(PermissionStatus {
-                granted: true,
-                can_request: false,
-            });
-        }
-        AVAuthorizationStatus::NotDetermined => {}
-        _ => {
-            return Ok(PermissionStatus {
-                granted: false,
-                can_request: false,
-            });
-        }
-    }
-
-    let (tx, rx) = mpsc::channel::<bool>();
-    let block = RcBlock::new(move |granted: bool| {
-        let _ = tx.send(granted);
-    });
-
-    unsafe {
-        AVCaptureDevice::requestAccessForMediaType_completionHandler(AVMediaTypeAudio, &block);
-    }
-
-    let granted = rx.recv().unwrap_or(false);
-    Ok(PermissionStatus {
-        granted,
-        can_request: false,
-    })
-}
-
 /// Access to the audio-recorder APIs.
 pub struct AudioRecorder<R: Runtime> {
     #[allow(dead_code)]
@@ -605,28 +548,16 @@ impl<R: Runtime> AudioRecorder<R> {
         Ok(AudioDevicesResponse { devices: result })
     }
 
-    /// Check microphone permission.
-    /// On macOS: queries AVCaptureDevice authorization status.
-    /// On Linux/Windows: always returns granted.
+    /// Check microphone permission (always granted on desktop)
     pub fn check_permission(&self) -> crate::Result<PermissionStatus> {
-        #[cfg(target_os = "macos")]
-        return check_permission_macos();
-
-        #[cfg(not(target_os = "macos"))]
         Ok(PermissionStatus {
             granted: true,
             can_request: false,
         })
     }
 
-    /// Request microphone permission.
-    /// On macOS: calls AVCaptureDevice.requestAccess(for:) and blocks until the dialog resolves.
-    /// On Linux/Windows: always returns granted.
+    /// Request microphone permission (no-op on desktop)
     pub fn request_permission(&self) -> crate::Result<PermissionStatus> {
-        #[cfg(target_os = "macos")]
-        return request_permission_macos();
-
-        #[cfg(not(target_os = "macos"))]
         Ok(PermissionStatus {
             granted: true,
             can_request: false,

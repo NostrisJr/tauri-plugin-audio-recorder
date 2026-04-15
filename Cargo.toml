@@ -25,10 +25,5 @@ log = "0.4"
 cpal = "0.15"
 hound = "3.5"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.5"
-objc2-av-foundation = { version = "0.2", features = ["AVCaptureDevice", "AVMediaFormat"] }
-block2 = "0.5"
-
 [build-dependencies]
 tauri-plugin = { version = "2.5.2", features = ["build"] }

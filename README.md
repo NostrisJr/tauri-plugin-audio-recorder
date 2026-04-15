@@ -272,8 +272,7 @@ Request microphone permission from user.
 
 **Behavior:**
 
-- macOS: Checks/requests AVCaptureDevice authorization (shows system dialog on first call)
-- Linux/Windows: Returns granted immediately (no permission system)
+- Desktop: Returns granted immediately (no permission system)
 - Android: Shows permission dialog
 - iOS: Shows permission dialog on first request
 
