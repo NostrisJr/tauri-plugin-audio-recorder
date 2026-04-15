@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS / Desktop**: replaced quality-preset sample-rate negotiation with `device.default_input_config()` native format
+  - The previous negotiation loop built a `StreamConfig` with the preset sample rate (e.g. 44100 Hz) even when the device's native rate differed, causing CoreAudio to silently deliver empty buffers with no error
+  - `cpal_config` is now derived from `SupportedStreamConfig::config()`, which always matches the hardware's native rate and channel count
+  - The `quality` preset field continues to work on iOS and Android but is ignored on desktop
 - **macOS**: `checkPermission` and `requestPermission` now call AVFoundation instead of always returning granted
   - `checkPermission` maps `AVAuthorizationStatus`: `NotDetermined → {granted:false, canRequest:true}`, `Authorized → {granted:true, canRequest:false}`, `Denied/Restricted → {granted:false, canRequest:false}`
   - `requestPermission` blocks until the system dialog resolves (using `AVCaptureDevice.requestAccess(for:)` + `mpsc` channel), then returns the actual result

@@ -190,62 +190,8 @@ fn start_recording_internal<R: Runtime>(
         .default_input_config()
         .map_err(|e| Error::Recording(format!("Failed to get device config: {}", e)))?;
 
-    // Try to use quality preset settings, fall back to device defaults
-    let target_sample_rate = config.quality.sample_rate();
-    let target_channels = config.quality.channels();
-
-    // Check if device supports the target configuration
-    let supported_configs = device.supported_input_configs();
-    let (sample_rate, channels) = if let Ok(configs) = supported_configs {
-        let mut best_match = None;
-        for cfg in configs {
-            let sr_min = cfg.min_sample_rate().0;
-            let sr_max = cfg.max_sample_rate().0;
-            let ch = cfg.channels();
-
-            // Check if target sample rate is in range and channels match
-            if target_sample_rate >= sr_min && target_sample_rate <= sr_max && ch == target_channels
-            {
-                best_match = Some((target_sample_rate, target_channels));
-                break;
-            }
-            // Try just matching sample rate
-            if best_match.is_none() && target_sample_rate >= sr_min && target_sample_rate <= sr_max
-            {
-                best_match = Some((target_sample_rate, ch));
-            }
-        }
-
-        match best_match {
-            Some((sr, ch)) => {
-                log::info!(
-                    "Using quality preset: {}Hz, {} channels (target was {}Hz, {} channels)",
-                    sr,
-                    ch,
-                    target_sample_rate,
-                    target_channels
-                );
-                (sr, ch)
-            }
-            None => {
-                log::warn!(
-                    "Quality preset not supported ({}Hz, {} ch), using device defaults",
-                    target_sample_rate,
-                    target_channels
-                );
-                (
-                    supported_config.sample_rate().0,
-                    supported_config.channels(),
-                )
-            }
-        }
-    } else {
-        log::warn!("Could not enumerate supported configs, using device defaults");
-        (
-            supported_config.sample_rate().0,
-            supported_config.channels(),
-        )
-    };
+    let sample_rate = supported_config.sample_rate().0;
+    let channels = supported_config.channels();
 
     log::info!(
         "Recording config: {}Hz, {} channels, format: {:?}",
@@ -254,12 +200,9 @@ fn start_recording_internal<R: Runtime>(
         supported_config.sample_format()
     );
 
-    // Build stream config with our target settings
-    let cpal_config = StreamConfig {
-        channels,
-        sample_rate: cpal::SampleRate(sample_rate),
-        buffer_size: cpal::BufferSize::Default,
-    };
+    // StreamConfig dérivé directement du config natif pour garantir que
+    // CoreAudio appellera bien le callback (sample rate non natif = silence sans erreur)
+    let cpal_config: StreamConfig = supported_config.config();
 
     // Create output file path
     // If output_path is empty or just a filename, use temp directory

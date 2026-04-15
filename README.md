@@ -204,7 +204,7 @@ Start audio recording.
 
 - `outputPath`: File path without extension (required)
 - `format`: Audio format (currently only "wav", mobile outputs M4A)
-- `quality`: "low" (16kHz mono) | "medium" (44.1kHz mono) | "high" (48kHz stereo)
+- `quality`: "low" | "medium" | "high" — hint used on mobile; on desktop the device's native sample rate and channel count are always used
 - `maxDuration`: Max recording duration in seconds (0 = unlimited)
 
 **Throws:** Error if already recording or permission denied
@@ -339,6 +339,8 @@ interface RecordingStatus {
 | `low`    | 16 kHz      | Mono     | Voice/Speech       |
 | `medium` | 44.1 kHz    | Mono     | General purpose    |
 | `high`   | 48 kHz      | Stereo   | Music/High quality |
+
+> **Desktop note**: on Windows, macOS, and Linux the quality preset is ignored. The device's native sample rate and channel count (reported by `default_input_config()`) are always used to ensure CoreAudio and other platform backends deliver actual audio samples. The actual rate is reflected in `RecordingResult.sampleRate`.
 
 ## Platform-specific Output Formats
 
