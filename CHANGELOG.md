@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **macOS**: `checkPermission` and `requestPermission` now call AVFoundation instead of always returning granted
+  - `checkPermission` maps `AVAuthorizationStatus`: `NotDetermined → {granted:false, canRequest:true}`, `Authorized → {granted:true, canRequest:false}`, `Denied/Restricted → {granted:false, canRequest:false}`
+  - `requestPermission` blocks until the system dialog resolves (using `AVCaptureDevice.requestAccess(for:)` + `mpsc` channel), then returns the actual result
+  - Fixes silent audio capture when macOS revokes microphone permission after an app rebuild
+
+### Documentation
+
+- Added macOS entitlement requirement (`com.apple.security.device.audio-input`) to README platform-specific setup
+
+---
+
 ## [0.2.0] - 2026-04-14
 
 ### Added

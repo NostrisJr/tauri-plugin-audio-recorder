@@ -89,6 +89,17 @@ Add to `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 ```
 
+#### macOS (entitlements)
+
+Add the audio-input entitlement to your app's `.entitlements` file (e.g. `src-tauri/entitlements.plist`):
+
+```xml
+<key>com.apple.security.device.audio-input</key>
+<true/>
+```
+
+Without this entitlement the sandbox will silently deny microphone access and `cpal` will capture silence with no error.
+
 #### iOS (Info.plist)
 
 ```xml
@@ -261,7 +272,8 @@ Request microphone permission from user.
 
 **Behavior:**
 
-- Desktop: Returns granted immediately (no permission system)
+- macOS: Checks/requests AVCaptureDevice authorization (shows system dialog on first call)
+- Linux/Windows: Returns granted immediately (no permission system)
 - Android: Shows permission dialog
 - iOS: Shows permission dialog on first request
 
