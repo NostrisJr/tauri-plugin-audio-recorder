@@ -521,21 +521,18 @@ class AudioRecorderPlugin: Plugin {
         startAmplitudeTimer()
     }
 
-    /// Démarre un DispatchSourceTimer à 100ms qui lit `latestRms` et émet l'événement d'amplitude.
-    /// DispatchSource ne dépend pas d'un run loop — fonctionne depuis n'importe quel thread.
     private func startAmplitudeTimer() {
         stopAmplitudeTimer()
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(100))
         timer.setEventHandler { [weak self] in
-            guard let self = self, self.isRecording, !self.isPaused else { return }
+            guard let self else { return }
             self.trigger("audio-recorder://amplitude", data: ["rms": Double(self.latestRms)])
         }
         timer.resume()
-        self.amplitudeTimer = timer
+        amplitudeTimer = timer
     }
 
-    /// Annule et libère le timer d'amplitude.
     private func stopAmplitudeTimer() {
         amplitudeTimer?.cancel()
         amplitudeTimer = nil
@@ -567,6 +564,9 @@ class AudioRecorderPlugin: Plugin {
             NSLog("[AudioRecorder]   Failed to deactivate audio session: \(error.localizedDescription)")
             // Continue cleanup even if deactivation fails
         }
+        // Restore session to playback so the webview can play audio after recording
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
         NSLog("[AudioRecorder]   Cleanup complete")
     }
 }
