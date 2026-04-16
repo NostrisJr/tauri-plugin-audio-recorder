@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **iOS**: emit `audio-recorder://amplitude` event every 100ms during active recording, matching the macOS behaviour
+  - RMS is computed from PCM buffers delivered by the `AVAudioEngine` input tap and stored in `latestRms`
+  - A `Timer` (100ms, main run loop) reads `latestRms` and calls `trigger("audio-recorder://amplitude", data: ["rms": Double])`
+  - Timer is started on `startRecording`, stopped on `pauseRecording` and `stopRecording`/`cleanup`, restarted on `resumeRecording`
+  - `latestRms` is reset to 0.0 on resume and cleanup so stale values are never re-emitted after silence
+
 ### Fixed
 
 - **macOS / Desktop**: replaced quality-preset sample-rate negotiation with `device.default_input_config()` native format

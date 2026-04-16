@@ -26,6 +26,8 @@ class AudioRecorderPlugin: Plugin {
     private var currentChannels: Int = 1
     private var maxDurationTimer: Timer?
     private var wasRecordingBeforeInterruption: Bool = false
+    private var amplitudeTimer: Timer?
+    private var latestRms: Float = 0.0
     
     override init() {
         super.init()
@@ -283,6 +285,7 @@ class AudioRecorderPlugin: Plugin {
             return nil
         }
 
+        stopAmplitudeTimer()
         // Arrêt du moteur — le tap ne sera plus appelé après stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
@@ -336,9 +339,10 @@ class AudioRecorderPlugin: Plugin {
             return
         }
         
-        // Le tap AVAudioEngine vérifie isPaused et cesse d'écrire/d'émettre
+        // Le tap AVAudioEngine vérifie isPaused et cesse d'écrire
         isPaused = true
         pauseStartTime = Date()
+        stopAmplitudeTimer()
         NSLog("[AudioRecorder]   Enregistrement mis en pause à \(pauseStartTime!)")
         
         invoke.resolve()
@@ -361,7 +365,7 @@ class AudioRecorderPlugin: Plugin {
             return
         }
         
-        // Reprise : le tap recommencera à écrire et à émettre les events d'amplitude
+        // Reprise : le tap recommencera à écrire, le timer réémet les events d'amplitude
         if let pauseStart = pauseStartTime {
             let pauseDuration = Date().timeIntervalSince(pauseStart)
             pausedDuration += pauseDuration
@@ -369,6 +373,8 @@ class AudioRecorderPlugin: Plugin {
         }
         isPaused = false
         pauseStartTime = nil
+        latestRms = 0.0
+        startAmplitudeTimer()
         NSLog("[AudioRecorder]   Enregistrement repris")
         
         invoke.resolve()
@@ -498,33 +504,45 @@ class AudioRecorderPlugin: Plugin {
             guard let self = self, !self.isPaused else { return }
             // Écriture dans le fichier AAC
             try? self.audioOutputFile?.write(from: buffer)
-            // Calcul et émission du RMS
-            self.emitAmplitude(from: buffer)
+            // Mise à jour du RMS (lu par le timer d'amplitude toutes les 100ms)
+            if let channelData = buffer.floatChannelData?[0] {
+                let frameCount = Int(buffer.frameLength)
+                if frameCount > 0 {
+                    var sumSq: Float = 0.0
+                    for i in 0..<frameCount { sumSq += channelData[i] * channelData[i] }
+                    self.latestRms = min(sqrt(sumSq / Float(frameCount)), 1.0)
+                }
+            }
         }
 
         try engine.start()
         audioEngine = engine
         NSLog("[AudioRecorder] AVAudioEngine démarré")
+        startAmplitudeTimer()
     }
 
-    /// Calcule le RMS sur le premier canal du buffer et émet l'event d'amplitude.
-    private func emitAmplitude(from buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData?[0] else { return }
-        let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return }
-
-        var sumSq: Float = 0.0
-        for i in 0..<frameCount {
-            sumSq += channelData[i] * channelData[i]
+    /// Démarre un Timer à 100ms qui lit `latestRms` et émet l'événement d'amplitude.
+    /// Doit être appelé depuis le main thread.
+    private func startAmplitudeTimer() {
+        amplitudeTimer?.invalidate()
+        amplitudeTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording, !self.isPaused else { return }
+            self.trigger("audio-recorder://amplitude", data: ["rms": Double(self.latestRms)])
         }
-        let rms = min(sqrt(sumSq / Float(frameCount)), 1.0)
-        self.trigger("audio-recorder://amplitude", data: ["rms": rms])
+    }
+
+    /// Annule et libère le timer d'amplitude.
+    private func stopAmplitudeTimer() {
+        amplitudeTimer?.invalidate()
+        amplitudeTimer = nil
     }
 
     private func cleanup() {
         NSLog("[AudioRecorder] cleanup() CALLED")
         NSLog("[AudioRecorder]   Resetting state...")
 
+        stopAmplitudeTimer()
+        latestRms = 0.0
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil

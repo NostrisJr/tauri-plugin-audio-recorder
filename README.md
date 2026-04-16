@@ -323,6 +323,7 @@ interface RecordingStatus {
 | M4A Output         | ❌      | ❌    | ❌    | ✅  | ✅      |
 | Max Duration       | ✅      | ✅    | ✅    | ✅  | ✅      |
 | Quality Presets    | ✅      | ✅    | ✅    | ✅  | ✅      |
+| Amplitude Events   | ✅      | ✅    | ✅    | ✅  | ✅      |
 
 **Legend:**
 
