@@ -26,7 +26,7 @@ class AudioRecorderPlugin: Plugin {
     private var currentChannels: Int = 1
     private var maxDurationTimer: Timer?
     private var wasRecordingBeforeInterruption: Bool = false
-    private var amplitudeTimer: Timer?
+    private var amplitudeTimer: DispatchSourceTimer?
     private var latestRms: Float = 0.0
     
     override init() {
@@ -521,19 +521,23 @@ class AudioRecorderPlugin: Plugin {
         startAmplitudeTimer()
     }
 
-    /// Démarre un Timer à 100ms qui lit `latestRms` et émet l'événement d'amplitude.
-    /// Doit être appelé depuis le main thread.
+    /// Démarre un DispatchSourceTimer à 100ms qui lit `latestRms` et émet l'événement d'amplitude.
+    /// DispatchSource ne dépend pas d'un run loop — fonctionne depuis n'importe quel thread.
     private func startAmplitudeTimer() {
-        amplitudeTimer?.invalidate()
-        amplitudeTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        stopAmplitudeTimer()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
             guard let self = self, self.isRecording, !self.isPaused else { return }
             self.trigger("audio-recorder://amplitude", data: ["rms": Double(self.latestRms)])
         }
+        timer.resume()
+        self.amplitudeTimer = timer
     }
 
     /// Annule et libère le timer d'amplitude.
     private func stopAmplitudeTimer() {
-        amplitudeTimer?.invalidate()
+        amplitudeTimer?.cancel()
         amplitudeTimer = nil
     }
 
