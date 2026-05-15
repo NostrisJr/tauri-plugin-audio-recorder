@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 // Note: input `format` is currently limited to "wav".
 // On mobile, the native recorder still outputs M4A/AAC due to platform APIs.
@@ -90,4 +91,41 @@ export async function requestPermission(): Promise<PermissionResponse> {
  */
 export async function getDevices(): Promise<DevicesResponse> {
   return await invoke("plugin:audio-recorder|get_devices");
+}
+
+/** Payload emitted by the recorder for each amplitude tick (~10 Hz). */
+export interface AmplitudePayload {
+  /** Linear RMS amplitude in `[0, 1]`. */
+  rms: number;
+}
+
+/**
+ * Subscribe to live RMS amplitude updates while recording.
+ *
+ * On iOS, the plugin pushes payloads via a Tauri `Channel` (registered through
+ * `register_amplitude_listener`). On desktop, the plugin emits a global event
+ * (`audio-recorder://amplitude`) which is consumed via `listen()`. This helper
+ * picks the right transport for the current platform and returns an unlisten
+ * function for cleanup.
+ *
+ * @param handler  Called for every amplitude tick.
+ * @returns        Function to call to stop receiving updates.
+ */
+export async function onAmplitude(
+  handler: (payload: AmplitudePayload) => void,
+): Promise<UnlistenFn> {
+  try {
+    const channel = new Channel<AmplitudePayload>(handler);
+    await invoke("plugin:audio-recorder|register_amplitude_listener", {
+      handler: channel,
+    });
+    // The plugin retains the channel until the next start/stop cycle, so the
+    // unlisten is a no-op here — the channel goes out of scope with the caller.
+    return () => {};
+  } catch {
+    return await listen<AmplitudePayload>(
+      "audio-recorder://amplitude",
+      (event) => handler(event.payload),
+    );
+  }
 }

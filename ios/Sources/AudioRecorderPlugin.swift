@@ -11,8 +11,19 @@ class RecordingConfig: Decodable {
     let maxDuration: Int?
 }
 
+// On iOS, Tauri calls the Swift plugin directly without going through the Rust
+// `#[command]` layer that would have unwrapped `config`. The guest-js helper
+// sends `{ config: {...} }`, so we have to unwrap it explicitly on the Swift side.
+class StartRecordingArgs: Decodable {
+    let config: RecordingConfig
+}
+
+struct AmplitudeEvent: Encodable {
+    let rms: Double
+}
+
 class AudioRecorderPlugin: Plugin {
-    // AVAudioEngine remplace AVAudioRecorder pour avoir accès aux buffers PCM (RMS)
+    // AVAudioEngine replaces AVAudioRecorder so we can tap PCM buffers (for RMS amplitude).
     private var audioEngine: AVAudioEngine?
     private var audioOutputFile: AVAudioFile?
     private var recordingStartTime: Date?
@@ -28,6 +39,7 @@ class AudioRecorderPlugin: Plugin {
     private var wasRecordingBeforeInterruption: Bool = false
     private var amplitudeTimer: DispatchSourceTimer?
     private var latestRms: Float = 0.0
+    private var amplitudeChannel: Channel?
     
     override init() {
         super.init()
@@ -68,7 +80,7 @@ class AudioRecorderPlugin: Plugin {
         
         switch type {
         case .began:
-            // Suspension de l'enregistrement : le tap AVAudioEngine cessera d'écrire
+            // Suspend recording: the AVAudioEngine tap will stop writing while isPaused is true.
             if isRecording && !isPaused {
                 wasRecordingBeforeInterruption = true
                 isPaused = true
@@ -123,11 +135,33 @@ class AudioRecorderPlugin: Plugin {
         NotificationCenter.default.removeObserver(self)
     }
     
+    struct RegisterAmplitudeArgs: Decodable {
+        let handler: Channel
+    }
+
+    @objc public func registerAmplitudeListener(_ invoke: Invoke) throws {
+        NSLog("[AudioRecorder] registerAmplitudeListener() CALLED")
+        let args = try invoke.parseArgs(RegisterAmplitudeArgs.self)
+        amplitudeChannel = args.handler
+        NSLog("[AudioRecorder] registerAmplitudeListener() OK — channel id=\(args.handler.id)")
+        invoke.resolve()
+    }
+
     @objc public func startRecording(_ invoke: Invoke) throws {
         NSLog("[AudioRecorder] ============================================")
         NSLog("[AudioRecorder] startRecording() CALLED")
-        
-        let config = try invoke.parseArgs(RecordingConfig.self)
+
+        // NOTE: the guest-js helper sends `{ config: {...} }` and Tauri iOS routes JS
+        // directly to Swift without unwrapping through the Rust `#[command]` layer —
+        // we therefore parse an explicit wrapper struct.
+        let config: RecordingConfig
+        do {
+            config = try invoke.parseArgs(StartRecordingArgs.self).config
+        } catch {
+            NSLog("[AudioRecorder]   ERROR parseArgs: \(error)")
+            invoke.reject("Failed to parse RecordingConfig: \(error.localizedDescription)")
+            return
+        }
         NSLog("[AudioRecorder]   outputPath: \(config.outputPath)")
         NSLog("[AudioRecorder]   format: \(config.format ?? "default")")
         NSLog("[AudioRecorder]   quality: \(config.quality ?? "medium")")
@@ -234,6 +268,7 @@ class AudioRecorderPlugin: Plugin {
 
             invoke.resolve()
         } catch {
+            NSLog("[AudioRecorder]   ERROR in startRecordingWithConfig: \(error)")
             cleanup()
             invoke.reject("Failed to start recording: \(error.localizedDescription)")
         }
@@ -286,12 +321,12 @@ class AudioRecorderPlugin: Plugin {
         }
 
         stopAmplitudeTimer()
-        // Arrêt du moteur — le tap ne sera plus appelé après stop()
+        // Stop the engine — the tap will no longer fire after stop().
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
-        audioOutputFile = nil  // flush + fermeture du fichier AAC
+        audioOutputFile = nil  // flushes and closes the AAC file.
         audioEngine = nil
-        NSLog("[AudioRecorder]   AVAudioEngine arrêté, fichier finalisé")
+        NSLog("[AudioRecorder]   AVAudioEngine stopped, file finalized")
         
         let endTime = Date()
         let totalDuration: TimeInterval
@@ -339,11 +374,11 @@ class AudioRecorderPlugin: Plugin {
             return
         }
         
-        // Le tap AVAudioEngine vérifie isPaused et cesse d'écrire
+        // The AVAudioEngine tap checks isPaused and stops writing while paused.
         isPaused = true
         pauseStartTime = Date()
         stopAmplitudeTimer()
-        NSLog("[AudioRecorder]   Enregistrement mis en pause à \(pauseStartTime!)")
+        NSLog("[AudioRecorder]   Recording paused at \(pauseStartTime!)")
         
         invoke.resolve()
     }
@@ -365,11 +400,11 @@ class AudioRecorderPlugin: Plugin {
             return
         }
         
-        // Reprise : le tap recommencera à écrire, le timer réémet les events d'amplitude
+        // Resume: the tap will write again and the timer will resume emitting amplitude events.
         if let pauseStart = pauseStartTime {
             let pauseDuration = Date().timeIntervalSince(pauseStart)
             pausedDuration += pauseDuration
-            NSLog("[AudioRecorder]   Pause de \(pauseDuration)s, total pausé: \(pausedDuration)s")
+            NSLog("[AudioRecorder]   Paused for \(pauseDuration)s, total paused: \(pausedDuration)s")
         }
         isPaused = false
         pauseStartTime = nil
@@ -475,18 +510,18 @@ class AudioRecorderPlugin: Plugin {
         }
     }
     
-    /// Démarre AVAudioEngine, installe un tap sur l'input pour le RMS et écrit dans fileUrl (AAC).
+    /// Starts AVAudioEngine, installs an input tap (for RMS amplitude) and writes the AAC file.
     private func startAudioEngine(fileUrl: URL) throws {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // Mise à jour des métadonnées depuis le format hardware réel
+        // Update metadata from the real hardware format.
         currentSampleRate = Int(inputFormat.sampleRate)
         currentChannels = Int(inputFormat.channelCount)
-        NSLog("[AudioRecorder] Format hardware: \(currentSampleRate)Hz, \(currentChannels) canaux")
+        NSLog("[AudioRecorder] Hardware format: \(currentSampleRate)Hz, \(currentChannels) channels")
 
-        // Fichier de sortie AAC — AVAudioFile convertit automatiquement le PCM entrant
+        // AAC output file — AVAudioFile transparently converts the incoming PCM.
         let fileSettings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: inputFormat.sampleRate,
@@ -497,14 +532,14 @@ class AudioRecorderPlugin: Plugin {
         let outputFile = try AVAudioFile(forWriting: fileUrl, settings: fileSettings)
         audioOutputFile = outputFile
 
-        // Taille de buffer pour ~50ms (minimum 1024 frames)
+        // Buffer size targeting ~50 ms (minimum 1024 frames).
         let bufferSize = AVAudioFrameCount(max(inputFormat.sampleRate * 0.05, 1024))
 
         inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, _ in
             guard let self = self, !self.isPaused else { return }
-            // Écriture dans le fichier AAC
+            // Write to the AAC file.
             try? self.audioOutputFile?.write(from: buffer)
-            // Mise à jour du RMS (lu par le timer d'amplitude toutes les 100ms)
+            // Update the latest RMS (read by the amplitude timer every 100 ms).
             if let channelData = buffer.floatChannelData?[0] {
                 let frameCount = Int(buffer.frameLength)
                 if frameCount > 0 {
@@ -517,17 +552,21 @@ class AudioRecorderPlugin: Plugin {
 
         try engine.start()
         audioEngine = engine
-        NSLog("[AudioRecorder] AVAudioEngine démarré")
+        NSLog("[AudioRecorder] AVAudioEngine started")
         startAmplitudeTimer()
     }
 
+    /// 100 ms timer that reads `latestRms` and forwards it to JS via the registered Channel.
+    /// Uses DispatchSource (no run-loop dependency) so it works from any thread.
     private func startAmplitudeTimer() {
         stopAmplitudeTimer()
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now(), repeating: .milliseconds(100))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            self.trigger("audio-recorder://amplitude", data: ["rms": Double(self.latestRms)])
+            if let ch = self.amplitudeChannel {
+                try? ch.send(AmplitudeEvent(rms: Double(self.latestRms)))
+            }
         }
         timer.resume()
         amplitudeTimer = timer
@@ -536,6 +575,7 @@ class AudioRecorderPlugin: Plugin {
     private func stopAmplitudeTimer() {
         amplitudeTimer?.cancel()
         amplitudeTimer = nil
+        amplitudeChannel = nil
     }
 
     private func cleanup() {

@@ -192,6 +192,27 @@ devices.forEach(device => {
 // Device selection will be added in future versions
 ```
 
+### Real-time Amplitude (Waveform)
+
+```typescript
+import { onAmplitude, startRecording } from "tauri-plugin-audio-recorder-api";
+
+// Subscribe once — the helper picks the right transport for the platform
+// (Tauri Channel on iOS, global event on desktop) and returns an unlisten fn.
+const unlisten = await onAmplitude(({ rms }) => {
+  // rms is a linear amplitude in [0, 1]. Apply your own visual mapping
+  // (logarithmic / gamma) if you need a smoother UI.
+  drawWaveformBar(rms);
+});
+
+await startRecording({ outputPath: "/path/to/recording", quality: "medium" });
+
+// Later, when you're done:
+unlisten();
+```
+
+The plugin emits one amplitude payload every ~100 ms while recording is active. Pause/resume and stop transitions are handled by the plugin — no need to unsubscribe between cycles, the same listener stays valid across recording sessions for the lifetime of the page.
+
 ## API Reference
 
 ### Recording Functions
@@ -275,6 +296,23 @@ Request microphone permission from user.
 - Desktop: Returns granted immediately (no permission system)
 - Android: Shows permission dialog
 - iOS: Shows permission dialog on first request
+
+#### `onAmplitude(handler): Promise<UnlistenFn>`
+
+Subscribe to live RMS amplitude updates emitted ~10 Hz while recording.
+
+**Parameters:**
+
+- `handler: (payload: { rms: number }) => void` — called on every tick. `rms` is a linear amplitude in `[0, 1]`.
+
+**Returns:** an `unlisten` function. Call it to stop receiving updates (and release the underlying global listener on desktop).
+
+**Transport:**
+
+- **iOS**: registers a Tauri `Channel` via the `register_amplitude_listener` command. The Swift plugin keeps a single channel reference and forwards every tick directly, without going through the global event bus.
+- **Desktop / macOS / Linux / Windows**: subscribes to the `audio-recorder://amplitude` global event via `listen()`.
+
+The helper performs the platform branching automatically — you call it the same way everywhere.
 
 ### Types
 
@@ -567,9 +605,55 @@ outputPath: "/path/to/recording"; // Correct
 
 ### iOS
 
-- Uses AVAudioRecorder
-- Requires `NSMicrophoneUsageDescription` in Info.plist
-- True WAV output with Linear PCM
+- Uses `AVAudioEngine` + `AVAudioInputNode.installTap` (replaces `AVAudioRecorder` so the plugin can compute RMS from raw PCM buffers)
+- Output container: AAC (`.aac`) — `AVAudioFile` handles the PCM→AAC conversion transparently
+- Requires `NSMicrophoneUsageDescription` in `Info.plist`
+- Audio session category is set to `.record` while active and restored to `.playback` on cleanup so the WebView can play media right after stopping
+
+## Implementing new mobile commands
+
+> Read this section before adding a new command that takes structured arguments on iOS or Android.
+
+Tauri's mobile bridge does **not** route JS calls through the Rust `#[command]` layer the way desktop does. When JS calls `invoke("plugin:audio-recorder|some_command", { foo: 42 })`:
+
+| Platform     | Path                                                                                                                                                                                                       |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop      | JS → Rust command handler (Tauri unwraps named params: `fn some_command(foo: u32)` receives `42`)                                                                                                            |
+| iOS, Android | JS → native plugin method **directly** (the Rust command never runs). The native side receives the **raw JS args**: `{ "foo": 42 }`.                                                                       |
+
+This means a native plugin command that maps to a Rust signature like
+
+```rust
+#[command]
+pub fn start_recording<R: Runtime>(app: AppHandle<R>, config: RecordingConfig) -> Result<()>;
+```
+
+(JS helper: `invoke("...|start_recording", { config: {...} })`) must, on the native side, parse a **wrapper** struct, not the inner type:
+
+```swift
+class StartRecordingArgs: Decodable {
+    let config: RecordingConfig
+}
+let parsed = try invoke.parseArgs(StartRecordingArgs.self)
+let config = parsed.config
+```
+
+```kotlin
+@InvokeArg
+class StartRecordingArgs {
+    lateinit var config: RecordingConfigArgs
+}
+val parsed = invoke.parseArgs(StartRecordingArgs::class.java)
+val config = parsed.config
+```
+
+### Why the bug used to be silent on Android
+
+`@InvokeArg` classes provide default field values, so calling `invoke.parseArgs(RecordingConfigArgs::class.java)` on a payload shaped like `{ "config": {...} }` does **not** throw — it just builds a `RecordingConfigArgs` filled with defaults (empty `outputPath`, `"wav"` format, etc.). The recording then fails further down for confusing reasons (empty path, missing settings, …). Always use a wrapper to avoid this trap.
+
+### Command naming
+
+The canonical command name is the snake_case identifier declared in `permissions/autogenerated/commands/<name>.toml`. From JS, **always invoke with the snake_case name** (`register_amplitude_listener`), not the Swift/Kotlin camelCase method name (`registerAmplitudeListener`). Tauri's mobile bridge converts snake_case → camelCase to find the native method, but the inverse does not work — a camelCase JS invoke is not matched against the permission allow-list and silently fails.
 
 ## Examples
 

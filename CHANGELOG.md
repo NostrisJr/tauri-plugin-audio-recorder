@@ -9,18 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **iOS**: emit `audio-recorder://amplitude` event every 100ms during active recording, matching the macOS behaviour
+- **iOS**: real-time amplitude updates during active recording, matching the macOS behaviour
   - RMS is computed from PCM buffers delivered by the `AVAudioEngine` input tap and stored in `latestRms`
-  - A `Timer` (100ms, main run loop) reads `latestRms` and calls `trigger("audio-recorder://amplitude", data: ["rms": Double])`
+  - A `DispatchSourceTimer` (100 ms, utility queue) reads `latestRms` and forwards it to JS through a Tauri `Channel`
   - Timer is started on `startRecording`, stopped on `pauseRecording` and `stopRecording`/`cleanup`, restarted on `resumeRecording`
   - `latestRms` is reset to 0.0 on resume and cleanup so stale values are never re-emitted after silence
+- **iOS**: new `register_amplitude_listener` command — frontends register a `Channel<{ rms: number }>` once and receive every tick directly (no global event bus, lower overhead, no listener leakage across windows)
+- **guest-js**: new `onAmplitude(handler)` helper that picks the right transport per platform (Channel on iOS, `listen()` on desktop) and returns an unlisten function
 
 ### Fixed
 
+- **iOS**: `start_recording` no longer rejects with a generic error when the JS helper is used
+  - Root cause: the guest-js helper wraps the payload as `{ config: {...} }`, and Tauri's iOS plugin bridge routes JS calls directly to the Swift method **without going through the Rust `#[command]` layer** that would otherwise unwrap the `config` parameter. The Swift plugin was decoding the args directly into `RecordingConfig` and failing with `keyNotFound("outputPath")`.
+  - Fix: introduce an explicit `StartRecordingArgs { config: RecordingConfig }` wrapper and parse that on the Swift side, then forward `args.config` to the rest of the flow.
+  - The bug was silent on Android because `@InvokeArg` Kotlin classes have default field values — `parseArgs` did not throw, it just produced a `RecordingConfigArgs` filled with defaults (empty `outputPath`, `"wav"` format, …), which would have led to harder-to-diagnose runtime failures further down. **See the README "Implementing new commands" section** before adding any new mobile command that takes structured arguments.
+- **iOS**: `parseArgs` failures inside `startRecording` are now caught explicitly and forwarded to JS as a readable error message instead of bubbling out of the `throws` declaration and reaching JS as a generic Tauri rejection.
+- **iOS**: `cleanup()` now restores the audio session category to `.playback` after stopping the recording so the WebView can play audio (e.g. the recording you just made) without having to wait for the OS to recycle the session.
 - **macOS / Desktop**: replaced quality-preset sample-rate negotiation with `device.default_input_config()` native format
   - The previous negotiation loop built a `StreamConfig` with the preset sample rate (e.g. 44100 Hz) even when the device's native rate differed, causing CoreAudio to silently deliver empty buffers with no error
   - `cpal_config` is now derived from `SupportedStreamConfig::config()`, which always matches the hardware's native rate and channel count
   - The `quality` preset field continues to work on iOS and Android but is ignored on desktop
+
+### ⚠️ Notes for Android implementers
+
+The same `{ config }` wrapping issue exists on Android today but is hidden by `@InvokeArg` defaults — it will surface as silent misbehaviour rather than an exception. Before publishing parity with the iOS amplitude `Channel` flow, the Kotlin side should:
+
+1. Mirror the wrapper struct (`StartRecordingArgs(config: RecordingConfigArgs)`) and call `args.config` instead of relying on default-filled fields.
+2. Expose an equivalent of `register_amplitude_listener` returning a `Channel` (Android plugins receive `Channel` arguments the same way as iOS — see `RegisterAmplitudeArgs` in `AudioRecorderPlugin.swift`).
+3. Use the same snake_case command name (`register_amplitude_listener`) so the `onAmplitude()` JS helper works without per-platform branching.
 
 ---
 

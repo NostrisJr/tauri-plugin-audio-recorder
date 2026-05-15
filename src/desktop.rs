@@ -13,6 +13,63 @@ use tauri::{plugin::PluginApi, AppHandle, Emitter, Runtime};
 use crate::error::Error;
 use crate::models::*;
 
+// ── Permissions macOS via AVFoundation ────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+mod macos_mic {
+    use block2::StackBlock;
+    use objc2::runtime::Bool;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+    use std::sync::{Arc, Condvar, Mutex};
+
+    // Lie AVFoundation.framework pour accéder à AVCaptureDevice
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" {}
+
+    // AVAuthorizationStatus : 0=notDetermined 1=restricted 2=denied 3=authorized
+    pub fn auth_status() -> i64 {
+        unsafe {
+            let media = NSString::from_str("soun");
+            msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: &*media]
+        }
+    }
+
+    /// Retourne (granted, can_request). Si notDetermined, affiche le dialogue système.
+    pub fn request_permission() -> (bool, bool) {
+        let status = auth_status();
+        match status {
+            3 => return (true, false),
+            0 => {}
+            _ => return (false, false), // restricted ou denied
+        }
+
+        let pair = Arc::new((Mutex::new(Option::<bool>::None), Condvar::new()));
+        let pair2 = Arc::clone(&pair);
+
+        let block = StackBlock::new(move |granted: Bool| {
+            let (lock, cvar) = &*pair2;
+            *lock.lock().unwrap() = Some(granted.as_bool());
+            cvar.notify_one();
+        });
+
+        unsafe {
+            let media = NSString::from_str("soun");
+            let _: () = msg_send![
+                class!(AVCaptureDevice),
+                requestAccessForMediaType: &*media,
+                completionHandler: &block
+            ];
+        }
+
+        let (lock, cvar) = &*pair;
+        let result = cvar
+            .wait_while(lock.lock().unwrap(), |r| r.is_none())
+            .unwrap();
+        (result.unwrap_or(false), false)
+    }
+}
+
 /// Accumulateur RMS sur une fenêtre glissante de ~50ms.
 /// Appelé depuis le callback audio (thread dédié, pas de contention).
 struct AmplitudeAccumulator {
@@ -548,16 +605,31 @@ impl<R: Runtime> AudioRecorder<R> {
         Ok(AudioDevicesResponse { devices: result })
     }
 
-    /// Check microphone permission (always granted on desktop)
+    /// Vérifie l'autorisation micro (TCC sur macOS, toujours accordée ailleurs)
     pub fn check_permission(&self) -> crate::Result<PermissionStatus> {
+        #[cfg(target_os = "macos")]
+        {
+            let status = macos_mic::auth_status();
+            return Ok(PermissionStatus {
+                granted: status == 3,
+                can_request: status == 0,
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
         Ok(PermissionStatus {
             granted: true,
             can_request: false,
         })
     }
 
-    /// Request microphone permission (no-op on desktop)
+    /// Demande l'autorisation micro (dialogue système sur macOS, no-op ailleurs)
     pub fn request_permission(&self) -> crate::Result<PermissionStatus> {
+        #[cfg(target_os = "macos")]
+        {
+            let (granted, can_request) = macos_mic::request_permission();
+            return Ok(PermissionStatus { granted, can_request });
+        }
+        #[cfg(not(target_os = "macos"))]
         Ok(PermissionStatus {
             granted: true,
             can_request: false,

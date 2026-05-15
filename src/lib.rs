@@ -36,8 +36,15 @@ impl<R: Runtime, T: Manager<R>> crate::AudioRecorderExt<R> for T {
 
 /// Initializes the plugin.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::new("audio-recorder")
-        .invoke_handler(tauri::generate_handler![
+    // Sur mobile, pas de Rust invoke_handler : toutes les invocations (y compris
+    // registerListener / removeListener du Plugin.swift de base) passent directement
+    // au plugin iOS/Android. Sur desktop, les commandes sont gérées côté Rust.
+    #[allow(unused_mut)]
+    let mut builder = Builder::new("audio-recorder");
+
+    #[cfg(desktop)]
+    {
+        builder = builder.invoke_handler(tauri::generate_handler![
             commands::start_recording,
             commands::stop_recording,
             commands::pause_recording,
@@ -46,7 +53,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::get_devices,
             commands::check_permission,
             commands::request_permission,
-        ])
+        ]);
+    }
+
+    builder
         .setup(|app, api| {
             #[cfg(mobile)]
             let audio_recorder = mobile::init(app, api)?;

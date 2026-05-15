@@ -12,6 +12,7 @@ Default permissions for the Audio Recorder plugin - allows all audio recording o
 - `allow-get-devices`
 - `allow-check-permission`
 - `allow-request-permission`
+- `allow-register-amplitude-listener`
 
 ## Permission Table
 
@@ -122,6 +123,32 @@ Enables the pause_recording command without any pre-configured scope.
 <td>
 
 Denies the pause_recording command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`audio-recorder:allow-register-amplitude-listener`
+
+</td>
+<td>
+
+Enables the register_amplitude_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`audio-recorder:deny-register-amplitude-listener`
+
+</td>
+<td>
+
+Denies the register_amplitude_listener command without any pre-configured scope.
 
 </td>
 </tr>

@@ -7,6 +7,7 @@ const COMMANDS: &[&str] = &[
     "get_devices",
     "check_permission",
     "request_permission",
+    "register_amplitude_listener",
 ];
 
 fn main() {

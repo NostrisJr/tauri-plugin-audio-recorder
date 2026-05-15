@@ -11,4 +11,5 @@ permissions = [
     "allow-get-devices",
     "allow-check-permission",
     "allow-request-permission",
+    "allow-register-amplitude-listener",
 ]

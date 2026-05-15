@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-register-amplitude-listener"
+description = "Enables the register_amplitude_listener command without any pre-configured scope."
+commands.allow = ["register_amplitude_listener"]
+
+[[permission]]
+identifier = "deny-register-amplitude-listener"
+description = "Denies the register_amplitude_listener command without any pre-configured scope."
+commands.deny = ["register_amplitude_listener"]
